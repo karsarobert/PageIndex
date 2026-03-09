@@ -18,17 +18,21 @@ from pathlib import Path
 from types import SimpleNamespace as config
 
 CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None
 
 def count_tokens(text, model=None):
     if not text:
         return 0
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     return len(tokens)
 
 def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -60,7 +64,7 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
 
 def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
     max_retries = 10
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL)
     for i in range(max_retries):
         try:
             if chat_history:
@@ -91,21 +95,25 @@ async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
     messages = [{"role": "user", "content": prompt}]
     for i in range(max_retries):
         try:
-            async with openai.AsyncOpenAI(api_key=api_key) as client:
+            async with openai.AsyncOpenAI(api_key=api_key, base_url=OPENAI_BASE_URL) as client:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0,
                 )
                 return response.choices[0].message.content
+        except openai.BadRequestError as e:
+            # 400 errors (e.g. token limit exceeded) will never succeed on retry
+            logging.error(f"BadRequestError (no retry): {e}")
+            return "Error"
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
             if i < max_retries - 1:
-                await asyncio.sleep(1)  # Wait for 1s before retrying
+                await asyncio.sleep(1)  # async sleep — does NOT block the event loop
             else:
                 logging.error('Max retries reached for prompt: ' + prompt)
-                return "Error"  
+                return "Error"
             
             
 def get_json_content(response):
@@ -606,8 +614,9 @@ async def generate_node_summary(node, model=None):
     prompt = f"""You are given a part of a document, your task is to generate a description of the partial document about what are main points covered in the partial document.
 
     Partial Document Text: {node['text']}
-    
+
     Directly return the description, do not include any other text.
+    Respond in the same language as the document text.
     """
     response = await ChatGPT_API_async(model, prompt)
     return response
